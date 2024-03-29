@@ -160,7 +160,9 @@ static void proxy_connection_ref(proxy_connection* conn,
 static void proxy_connection_unref(proxy_connection* conn,
                                    const char* /*reason*/) {
   if (gpr_unref(&conn->refcount)) {
-    grpc_endpoint_destroy(conn->client_endpoint);
+    if (conn->client_endpoint != nullptr) {
+      grpc_endpoint_destroy(conn->client_endpoint);
+    }
     if (conn->server_endpoint != nullptr) {
       grpc_endpoint_destroy(conn->server_endpoint);
     }
@@ -226,12 +228,14 @@ static void proxy_connection_failed(proxy_connection* conn,
   }
   // If we decided to shut down either one and have not yet done so, do so.
   if (shutdown_client && !conn->client_shutdown) {
-    grpc_endpoint_shutdown(conn->client_endpoint, error);
+    grpc_endpoint_destroy(conn->client_endpoint);
+    conn->client_endpoint = nullptr;
     conn->client_shutdown = true;
   }
   if (shutdown_server && !conn->server_shutdown &&
       (conn->server_endpoint != nullptr)) {
-    grpc_endpoint_shutdown(conn->server_endpoint, error);
+    grpc_endpoint_destroy(conn->server_endpoint);
+    conn->server_endpoint = nullptr;
     conn->server_shutdown = true;
   }
   // Unref the connection.
@@ -249,8 +253,8 @@ static void on_client_write_done_locked(void* arg, grpc_error_handle error) {
     return;
   }
   if (conn->server_read_failed) {
-    grpc_endpoint_shutdown(conn->client_endpoint,
-                           absl::UnknownError("Client shutdown"));
+    grpc_endpoint_destroy(conn->client_endpoint);
+    conn->client_endpoint = nullptr;
     // No more writes.  Unref the connection.
     proxy_connection_unref(conn, "client_write");
     return;
@@ -293,8 +297,8 @@ static void on_server_write_done_locked(void* arg, grpc_error_handle error) {
   }
 
   if (conn->client_read_failed) {
-    grpc_endpoint_shutdown(conn->server_endpoint,
-                           absl::UnknownError("Server shutdown"));
+    grpc_endpoint_destroy(conn->server_endpoint);
+    conn->server_endpoint = nullptr;
     // No more writes.  Unref the connection.
     proxy_connection_unref(conn, "server_write");
     return;
@@ -603,14 +607,12 @@ static void on_accept(void* arg, grpc_endpoint* endpoint,
                       grpc_tcp_server_acceptor* acceptor) {
   gpr_free(acceptor);
   if (proxy_destroyed.load()) {
-    grpc_endpoint_shutdown(endpoint, absl::UnknownError("proxy shutdown"));
     grpc_endpoint_destroy(endpoint);
     return;
   }
   grpc_end2end_http_proxy* proxy = static_cast<grpc_end2end_http_proxy*>(arg);
   proxy_ref(proxy);
   if (proxy->is_shutdown.load()) {
-    grpc_endpoint_shutdown(endpoint, absl::UnknownError("proxy shutdown"));
     grpc_endpoint_destroy(endpoint);
     proxy_unref(proxy);
     return;

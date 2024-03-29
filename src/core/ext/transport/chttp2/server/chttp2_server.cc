@@ -462,11 +462,6 @@ void Chttp2ServerListener::ActiveConnection::HandshakingState::OnHandshakeDone(
       if (error.ok() && args->endpoint != nullptr) {
         // We were shut down or stopped serving after handshaking completed
         // successfully, so destroy the endpoint here.
-        // TODO(ctiller): It is currently necessary to shutdown endpoints
-        // before destroying them, even if we know that there are no
-        // pending read/write callbacks.  This should be fixed, at which
-        // point this can be removed.
-        grpc_endpoint_shutdown(args->endpoint, absl::OkStatus());
         grpc_endpoint_destroy(args->endpoint);
         grpc_slice_buffer_destroy(args->read_buffer);
         gpr_free(args->read_buffer);
@@ -524,7 +519,7 @@ void Chttp2ServerListener::ActiveConnection::HandshakingState::OnHandshakeDone(
           }
           grpc_chttp2_transport_start_reading(transport, args->read_buffer,
                                               &self->on_receive_settings_,
-                                              on_close);
+                                              nullptr, on_close);
           self->timer_handle_ = self->connection_->event_engine_->RunAfter(
               self->deadline_ - Timestamp::Now(),
               [self = self->Ref()]() mutable {
@@ -645,7 +640,6 @@ void Chttp2ServerListener::ActiveConnection::Start(
       // owning Chttp2ServerListener and all associated ActiveConnections have
       // been orphaned. The generated endpoints need to be shutdown here to
       // ensure the tcp connections are closed appropriately.
-      grpc_endpoint_shutdown(endpoint, absl::OkStatus());
       grpc_endpoint_destroy(endpoint);
       return;
     }
@@ -846,7 +840,6 @@ void Chttp2ServerListener::OnAccept(void* arg, grpc_endpoint* tcp,
     connection_manager = self->connection_manager_;
   }
   auto endpoint_cleanup = [&](grpc_error_handle error) {
-    grpc_endpoint_shutdown(tcp, error);
     grpc_endpoint_destroy(tcp);
     gpr_free(acceptor);
   };
@@ -1128,7 +1121,8 @@ void grpc_server_add_channel_from_fd(grpc_server* server, int fd,
     for (grpc_pollset* pollset : core_server->pollsets()) {
       grpc_endpoint_add_to_pollset(server_endpoint, pollset);
     }
-    grpc_chttp2_transport_start_reading(transport, nullptr, nullptr, nullptr);
+    grpc_chttp2_transport_start_reading(transport, nullptr, nullptr, nullptr,
+                                        nullptr);
   } else {
     gpr_log(GPR_ERROR, "Failed to create channel: %s",
             grpc_core::StatusToString(error).c_str());

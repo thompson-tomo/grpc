@@ -492,11 +492,6 @@ static void endpoint_write(grpc_endpoint* secure_ep, grpc_slice_buffer* slices,
                       max_frame_size);
 }
 
-static void endpoint_shutdown(grpc_endpoint* secure_ep, grpc_error_handle why) {
-  secure_endpoint* ep = reinterpret_cast<secure_endpoint*>(secure_ep);
-  grpc_endpoint_shutdown(ep->wrapped_ep, why);
-}
-
 static void endpoint_destroy(grpc_endpoint* secure_ep) {
   secure_endpoint* ep = reinterpret_cast<secure_endpoint*>(secure_ep);
   ep->memory_owner.Reset();
@@ -546,7 +541,6 @@ static const grpc_endpoint_vtable vtable = {endpoint_read,
                                             endpoint_add_to_pollset,
                                             endpoint_add_to_pollset_set,
                                             endpoint_delete_from_pollset_set,
-                                            endpoint_shutdown,
                                             endpoint_destroy,
                                             endpoint_get_peer,
                                             endpoint_get_local_address,

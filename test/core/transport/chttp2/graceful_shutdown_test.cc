@@ -100,7 +100,8 @@ class GracefulShutdownTest : public ::testing::Test {
     GPR_ASSERT(core_server->SetupTransport(transport, nullptr,
                                            core_server->channel_args(),
                                            nullptr) == absl::OkStatus());
-    grpc_chttp2_transport_start_reading(transport, nullptr, nullptr, nullptr);
+    grpc_chttp2_transport_start_reading(transport, nullptr, nullptr, nullptr,
+                                        nullptr);
     // Start polling on the client
     Notification client_poller_thread_started_notification;
     client_poll_thread_ = std::make_unique<std::thread>(
@@ -139,13 +140,11 @@ class GracefulShutdownTest : public ::testing::Test {
   void ShutdownAndDestroy() {
     shutdown_ = true;
     ExecCtx exec_ctx;
-    grpc_endpoint_shutdown(fds_.client, GRPC_ERROR_CREATE("Client shutdown"));
+    grpc_endpoint_destroy(fds_.client);
     ExecCtx::Get()->Flush();
     client_poll_thread_->join();
     GPR_ASSERT(read_end_notification_.WaitForNotificationWithTimeout(
         absl::Seconds(5)));
-    grpc_endpoint_destroy(fds_.client);
-    ExecCtx::Get()->Flush();
     // Shutdown and destroy server
     grpc_server_shutdown_and_notify(server_, cq_, Tag(1000));
     cqv_->Expect(Tag(1000), true);

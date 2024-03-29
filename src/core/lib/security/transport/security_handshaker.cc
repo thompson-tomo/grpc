@@ -118,8 +118,7 @@ class SecurityHandshaker : public Handshaker {
   Mutex mu_;
 
   bool is_shutdown_ = false;
-  // Endpoint and read buffer to destroy after a shutdown.
-  grpc_endpoint* endpoint_to_destroy_ = nullptr;
+  // Read buffer to destroy after a shutdown.
   grpc_slice_buffer* read_buffer_to_destroy_ = nullptr;
 
   // State saved while performing the handshake.
@@ -156,9 +155,6 @@ SecurityHandshaker::SecurityHandshaker(tsi_handshaker* handshaker,
 SecurityHandshaker::~SecurityHandshaker() {
   tsi_handshaker_destroy(handshaker_);
   tsi_handshaker_result_destroy(handshaker_result_);
-  if (endpoint_to_destroy_ != nullptr) {
-    grpc_endpoint_destroy(endpoint_to_destroy_);
-  }
   if (read_buffer_to_destroy_ != nullptr) {
     grpc_slice_buffer_destroy(read_buffer_to_destroy_);
     gpr_free(read_buffer_to_destroy_);
@@ -190,8 +186,6 @@ size_t SecurityHandshaker::MoveReadBufferIntoHandshakeBuffer() {
 // Set args_ fields to NULL, saving the endpoint and read buffer for
 // later destruction.
 void SecurityHandshaker::CleanupArgsForFailureLocked() {
-  endpoint_to_destroy_ = args_->endpoint;
-  args_->endpoint = nullptr;
   read_buffer_to_destroy_ = args_->read_buffer;
   args_->read_buffer = nullptr;
   args_->args = ChannelArgs();
@@ -207,11 +201,8 @@ void SecurityHandshaker::HandshakeFailedLocked(grpc_error_handle error) {
   }
   if (!is_shutdown_) {
     tsi_handshaker_shutdown(handshaker_);
-    // TODO(ctiller): It is currently necessary to shutdown endpoints
-    // before destroying them, even if we know that there are no
-    // pending read/write callbacks.  This should be fixed, at which
-    // point this can be removed.
-    grpc_endpoint_shutdown(args_->endpoint, error);
+    grpc_endpoint_destroy(args_->endpoint);
+    args_->endpoint = nullptr;
     // Not shutting down, so the write failed.  Clean up before
     // invoking the callback.
     CleanupArgsForFailureLocked();
@@ -558,7 +549,8 @@ void SecurityHandshaker::Shutdown(grpc_error_handle why) {
     is_shutdown_ = true;
     connector_->cancel_check_peer(&on_peer_checked_, why);
     tsi_handshaker_shutdown(handshaker_);
-    grpc_endpoint_shutdown(args_->endpoint, why);
+    grpc_endpoint_destroy(args_->endpoint);
+    args_->endpoint = nullptr;
     CleanupArgsForFailureLocked();
   }
 }
@@ -592,7 +584,6 @@ class FailHandshaker : public Handshaker {
   void DoHandshake(grpc_tcp_server_acceptor* /*acceptor*/,
                    grpc_closure* on_handshake_done,
                    HandshakerArgs* args) override {
-    grpc_endpoint_shutdown(args->endpoint, status_);
     grpc_endpoint_destroy(args->endpoint);
     args->endpoint = nullptr;
     args->args = ChannelArgs();

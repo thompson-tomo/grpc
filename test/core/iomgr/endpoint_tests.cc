@@ -123,13 +123,6 @@ struct read_and_write_test_state {
   grpc_closure write_scheduler;
 };
 
-static void read_scheduler(void* data, grpc_error_handle /* error */) {
-  struct read_and_write_test_state* state =
-      static_cast<struct read_and_write_test_state*>(data);
-  grpc_endpoint_read(state->read_ep, &state->incoming, &state->done_read,
-                     /*urgent=*/false, /*min_progress_size=*/1);
-}
-
 static void read_and_write_test_read_handler_read_done(
     read_and_write_test_state* state, int read_done_state) {
   gpr_log(GPR_DEBUG, "Read handler done");
@@ -137,6 +130,17 @@ static void read_and_write_test_read_handler_read_done(
   state->read_done = read_done_state;
   GRPC_LOG_IF_ERROR("pollset_kick", grpc_pollset_kick(g_pollset, nullptr));
   gpr_mu_unlock(g_mu);
+}
+
+static void read_scheduler(void* data, grpc_error_handle /* error */) {
+  struct read_and_write_test_state* state =
+      static_cast<struct read_and_write_test_state*>(data);
+  if (state->read_ep == nullptr) {
+    read_and_write_test_read_handler_read_done(state, 1);
+    return;
+  }
+  grpc_endpoint_read(state->read_ep, &state->incoming, &state->done_read,
+                     /*urgent=*/false, /*min_progress_size=*/1);
 }
 
 static void read_and_write_test_read_handler(void* data,
@@ -264,9 +268,11 @@ static void read_and_write_test(grpc_endpoint_test_config config,
                      /*urgent=*/false, /*min_progress_size=*/1);
   if (shutdown) {
     gpr_log(GPR_DEBUG, "shutdown read");
-    grpc_endpoint_shutdown(state.read_ep, GRPC_ERROR_CREATE("Test Shutdown"));
+    grpc_endpoint_destroy(state.read_ep);
+    state.read_ep = nullptr;
     gpr_log(GPR_DEBUG, "shutdown write");
-    grpc_endpoint_shutdown(state.write_ep, GRPC_ERROR_CREATE("Test Shutdown"));
+    grpc_endpoint_destroy(state.write_ep);
+    state.write_ep = nullptr;
   }
   grpc_core::ExecCtx::Get()->Flush();
 
@@ -283,8 +289,10 @@ static void read_and_write_test(grpc_endpoint_test_config config,
   end_test(config);
   grpc_slice_buffer_destroy(&state.outgoing);
   grpc_slice_buffer_destroy(&state.incoming);
-  grpc_endpoint_destroy(state.read_ep);
-  grpc_endpoint_destroy(state.write_ep);
+  if (!shutdown) {
+    grpc_endpoint_destroy(state.read_ep);
+    grpc_endpoint_destroy(state.write_ep);
+  }
 }
 
 static void inc_on_failure(void* arg, grpc_error_handle error) {
@@ -312,48 +320,11 @@ static void wait_for_fail_count(int* fail_count, int want_fail_count) {
   gpr_mu_unlock(g_mu);
 }
 
-static void multiple_shutdown_test(grpc_endpoint_test_config config) {
-  grpc_endpoint_test_fixture f =
-      begin_test(config, "multiple_shutdown_test", 128);
-  int fail_count = 0;
-  grpc_slice_buffer slice_buffer;
-  grpc_slice_buffer_init(&slice_buffer);
-
-  grpc_core::ExecCtx exec_ctx;
-  grpc_endpoint_add_to_pollset(f.client_ep, g_pollset);
-  grpc_endpoint_read(f.client_ep, &slice_buffer,
-                     GRPC_CLOSURE_CREATE(inc_on_failure, &fail_count,
-                                         grpc_schedule_on_exec_ctx),
-                     /*urgent=*/false, /*min_progress_size=*/1);
-  wait_for_fail_count(&fail_count, 0);
-  grpc_endpoint_shutdown(f.client_ep, GRPC_ERROR_CREATE("Test Shutdown"));
-  wait_for_fail_count(&fail_count, 1);
-  grpc_endpoint_read(f.client_ep, &slice_buffer,
-                     GRPC_CLOSURE_CREATE(inc_on_failure, &fail_count,
-                                         grpc_schedule_on_exec_ctx),
-                     /*urgent=*/false, /*min_progress_size=*/1);
-  wait_for_fail_count(&fail_count, 2);
-  grpc_slice_buffer_add(&slice_buffer, grpc_slice_from_copied_string("a"));
-  grpc_endpoint_write(f.client_ep, &slice_buffer,
-                      GRPC_CLOSURE_CREATE(inc_on_failure, &fail_count,
-                                          grpc_schedule_on_exec_ctx),
-                      nullptr, /*max_frame_size=*/INT_MAX);
-  wait_for_fail_count(&fail_count, 3);
-  grpc_endpoint_shutdown(f.client_ep, GRPC_ERROR_CREATE("Test Shutdown"));
-  wait_for_fail_count(&fail_count, 3);
-
-  grpc_slice_buffer_destroy(&slice_buffer);
-
-  grpc_endpoint_destroy(f.client_ep);
-  grpc_endpoint_destroy(f.server_ep);
-}
-
 void grpc_endpoint_tests(grpc_endpoint_test_config config,
                          grpc_pollset* pollset, gpr_mu* mu) {
   size_t i;
   g_pollset = pollset;
   g_mu = mu;
-  multiple_shutdown_test(config);
   for (int i = 1; i <= 10000; i = i * 10) {
     read_and_write_test(config, 10000000, 100000, 8192, i, false);
     read_and_write_test(config, 1000000, 100000, 1, i, false);

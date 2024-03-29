@@ -385,7 +385,7 @@ grpc_chttp2_transport::~grpc_chttp2_transport() {
     channelz_socket.reset();
   }
 
-  grpc_endpoint_destroy(ep);
+  if (ep != nullptr) grpc_endpoint_destroy(ep);
 
   grpc_slice_buffer_destroy(&qbuf);
 
@@ -759,9 +759,20 @@ static void close_transport_locked(grpc_chttp2_transport* t,
       GRPC_CHTTP2_STREAM_UNREF(s, "chttp2_writing:close");
     }
     GPR_ASSERT(t->write_state == GRPC_CHTTP2_WRITE_STATE_IDLE);
-    grpc_endpoint_shutdown(t->ep, error);
+    if (t->interested_parties_until_recv_settings != nullptr) {
+      grpc_endpoint_delete_from_pollset_set(
+          t->ep, t->interested_parties_until_recv_settings);
+      t->interested_parties_until_recv_settings = nullptr;
+    }
+    grpc_endpoint_destroy(t->ep);
+    t->ep = nullptr;
   }
   if (t->notify_on_receive_settings != nullptr) {
+    if (t->interested_parties_until_recv_settings != nullptr) {
+      grpc_endpoint_delete_from_pollset_set(
+          t->ep, t->interested_parties_until_recv_settings);
+      t->interested_parties_until_recv_settings = nullptr;
+    }
     grpc_core::ExecCtx::Run(DEBUG_LOCATION, t->notify_on_receive_settings,
                             error);
     t->notify_on_receive_settings = nullptr;
@@ -3206,7 +3217,9 @@ grpc_core::Transport* grpc_create_chttp2_transport(
 
 void grpc_chttp2_transport_start_reading(
     grpc_core::Transport* transport, grpc_slice_buffer* read_buffer,
-    grpc_closure* notify_on_receive_settings, grpc_closure* notify_on_close) {
+    grpc_closure* notify_on_receive_settings,
+    grpc_pollset_set* interested_parties_until_recv_settings,
+    grpc_closure* notify_on_close) {
   auto t = reinterpret_cast<grpc_chttp2_transport*>(transport)->Ref();
   if (read_buffer != nullptr) {
     grpc_slice_buffer_move_into(read_buffer, &t->read_buffer);
@@ -3215,9 +3228,14 @@ void grpc_chttp2_transport_start_reading(
   auto* tp = t.get();
   tp->combiner->Run(
       grpc_core::NewClosure([t = std::move(t), notify_on_receive_settings,
+                             interested_parties_until_recv_settings,
                              notify_on_close](grpc_error_handle) mutable {
         if (!t->closed_with_error.ok()) {
           if (notify_on_receive_settings != nullptr) {
+            if (interested_parties_until_recv_settings != nullptr) {
+              grpc_endpoint_delete_from_pollset_set(
+                  t->ep, interested_parties_until_recv_settings);
+            }
             grpc_core::ExecCtx::Run(DEBUG_LOCATION, notify_on_receive_settings,
                                     t->closed_with_error);
           }
@@ -3227,6 +3245,8 @@ void grpc_chttp2_transport_start_reading(
           }
           return;
         }
+        t->interested_parties_until_recv_settings =
+            interested_parties_until_recv_settings;
         t->notify_on_receive_settings = notify_on_receive_settings;
         t->notify_on_close = notify_on_close;
         read_action_locked(std::move(t), absl::OkStatus());

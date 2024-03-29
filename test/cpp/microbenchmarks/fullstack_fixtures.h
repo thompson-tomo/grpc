@@ -188,7 +188,7 @@ class EndpointPairFixture : public BaseFixture {
           core_server->SetupTransport(server_transport_, nullptr, server_args,
                                       nullptr)));
       grpc_chttp2_transport_start_reading(server_transport_, nullptr, nullptr,
-                                          nullptr);
+                                          nullptr, nullptr);
     }
 
     // create channel
@@ -214,7 +214,7 @@ class EndpointPairFixture : public BaseFixture {
               ->release()
               ->c_ptr();
       grpc_chttp2_transport_start_reading(client_transport_, nullptr, nullptr,
-                                          nullptr);
+                                          nullptr, nullptr);
 
       channel_ = grpc::CreateChannelInternal(
           "", channel,
